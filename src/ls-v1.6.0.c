@@ -1,5 +1,5 @@
 /*
- * Programming Assignment 02: ls-v1.5.0
+ * Programming Assignment 02: ls-v1.6.0
  * Built on top of the instructor's base version lsv1.0.0.c
  *
  * Features so far:
@@ -7,13 +7,15 @@
  *   v1.2.0       default "down then across" column display
  *   v1.3.0  -x   horizontal (across) column display
  *   v1.4.0       alphabetical sorting with qsort()
- *   v1.5.0       colorized output based on file type  <-- added in this version
+ *   v1.5.0       colorized output based on file type
+ *   v1.6.0  -R   recursive listing  <-- added in this version
  *
  * Usage:
  *   $ ./bin/ls
  *   $ ./bin/ls -l
  *   $ ./bin/ls -x
- *   $ ./bin/ls /etc /home
+ *   $ ./bin/ls -R src
+ *   $ ./bin/ls -lR /home/kali/Desktop
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,6 +52,7 @@ extern int errno;
 
 /* ---------- global state set by the options ---------- */
 int display_mode   = MODE_DEFAULT;
+int recursive_flag = 0;
 int print_headers  = 0;   /* print "dirname:" above each listing? */
 int listed_before  = 0;   /* used to print a blank line between listings */
 
@@ -73,15 +76,16 @@ void   format_time(time_t mtime, char out[13]);
 int main(int argc, char *argv[])
 {
     int opt;
-    /* getopt() reads options one by one. "lx" = the options we accept. */
-    while ((opt = getopt(argc, argv, "lx")) != -1)
+    /* getopt() reads options one by one. "lxR" = the options we accept. */
+    while ((opt = getopt(argc, argv, "lxR")) != -1)
     {
         switch (opt)
         {
         case 'l': display_mode = MODE_LONG;       break;
         case 'x': display_mode = MODE_HORIZONTAL; break;
+        case 'R': recursive_flag = 1;             break;
         default:  /* getopt already printed "invalid option" */
-            fprintf(stderr, "Usage: %s [-l] [-x] [directory...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l] [-x] [-R] [directory...]\n", argv[0]);
             exit(1);
         }
     }
@@ -90,8 +94,8 @@ int main(int argc, char *argv[])
     int num_dirs = argc - optind;
 
     /* Like real ls: show "dirname:" headers when listing more than one
-       directory */
-    if (num_dirs > 1)
+       directory, or always when -R is used */
+    if (num_dirs > 1 || recursive_flag)
         print_headers = 1;
 
     if (num_dirs == 0)
@@ -104,7 +108,7 @@ int main(int argc, char *argv[])
 }
 
 /*
- * do_ls: read -> sort -> display
+ * do_ls: read -> sort -> display -> (if -R) recurse into subdirectories
  */
 void do_ls(const char *dir)
 {
@@ -131,6 +135,24 @@ void do_ls(const char *dir)
         display_horizontal(dir, names, n, maxlen);
     else
         display_vertical(dir, names, n, maxlen);
+
+    /* -R: after the whole directory is printed, visit each subdirectory */
+    if (recursive_flag)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            if (strcmp(names[i], ".") == 0 || strcmp(names[i], "..") == 0)
+                continue;          /* never go into . or .. (infinite loop) */
+
+            char path[PATH_MAX];
+            build_path(path, sizeof(path), dir, names[i]);
+
+            struct stat info;
+            /* lstat: a symlink pointing to a directory is NOT followed */
+            if (lstat(path, &info) == 0 && S_ISDIR(info.st_mode))
+                do_ls(path);       /* recursive call with the FULL path */
+        }
+    }
 
     free_entries(names, n);
 }
