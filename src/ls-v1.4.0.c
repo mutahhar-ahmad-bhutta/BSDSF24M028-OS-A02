@@ -1,11 +1,12 @@
 /*
- * Programming Assignment 02: ls-v1.3.0
+ * Programming Assignment 02: ls-v1.4.0
  * Built on top of the instructor's base version lsv1.0.0.c
  *
  * Features so far:
  *   v1.1.0  -l   long listing format
  *   v1.2.0       default "down then across" column display
- *   v1.3.0  -x   horizontal (across) column display  <-- added in this version
+ *   v1.3.0  -x   horizontal (across) column display
+ *   v1.4.0       alphabetical sorting with qsort()  <-- added in this version
  *
  * Usage:
  *   $ ./bin/ls
@@ -47,6 +48,7 @@ int listed_before  = 0;   /* used to print a blank line between listings */
 void   do_ls(const char *dir);
 char **read_entries(const char *dir, int *count, int *maxlen);
 void   free_entries(char **names, int count);
+int    compare_names(const void *a, const void *b);
 void   build_path(char *out, size_t size, const char *dir, const char *name);
 int    get_terminal_width(void);
 void   print_padded(const char *name, int width);
@@ -90,7 +92,7 @@ int main(int argc, char *argv[])
 }
 
 /*
- * do_ls: read all names -> display them
+ * do_ls: read -> sort -> display
  */
 void do_ls(const char *dir)
 {
@@ -106,6 +108,9 @@ void do_ls(const char *dir)
     char **names = read_entries(dir, &n, &maxlen);
     if (names == NULL)
         return;
+
+    /* sort the array of names alphabetically */
+    qsort(names, n, sizeof(char *), compare_names);
 
     /* call the right display function based on the mode flag */
     if (display_mode == MODE_LONG)
@@ -179,6 +184,17 @@ void free_entries(char **names, int count)
     for (int i = 0; i < count; i++)
         free(names[i]);     /* free each string ...   */
     free(names);            /* ... then the array itself */
+}
+
+/*
+ * compare_names: used by qsort(). qsort gives us pointers to two ELEMENTS
+ * of the array. Each element is a char*, so we receive a char** (as void*).
+ */
+int compare_names(const void *a, const void *b)
+{
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+    return strcmp(s1, s2);
 }
 
 /* build_path: "dir" + "/" + "name"  ->  e.g. "src/obj" */
