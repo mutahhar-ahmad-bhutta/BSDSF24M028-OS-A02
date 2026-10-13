@@ -1,14 +1,16 @@
 /*
- * Programming Assignment 02: ls-v1.2.0
+ * Programming Assignment 02: ls-v1.3.0
  * Built on top of the instructor's base version lsv1.0.0.c
  *
  * Features so far:
  *   v1.1.0  -l   long listing format
- *   v1.2.0       default "down then across" column display  <-- added in this version
+ *   v1.2.0       default "down then across" column display
+ *   v1.3.0  -x   horizontal (across) column display  <-- added in this version
  *
  * Usage:
  *   $ ./bin/ls
  *   $ ./bin/ls -l
+ *   $ ./bin/ls -x
  *   $ ./bin/ls /etc /home
  */
 #include <stdio.h>
@@ -31,6 +33,7 @@ extern int errno;
 /* ---------- display modes (which printing function to call) ---------- */
 #define MODE_DEFAULT    0   /* no option: "down then across" columns */
 #define MODE_LONG       1   /* -l : long listing                      */
+#define MODE_HORIZONTAL 2   /* -x : across (row by row) columns       */
 
 #define SPACING        2    /* spaces between two columns             */
 #define DEFAULT_WIDTH 80    /* used when terminal width is unknown    */
@@ -48,6 +51,7 @@ void   build_path(char *out, size_t size, const char *dir, const char *name);
 int    get_terminal_width(void);
 void   print_padded(const char *name, int width);
 void   display_vertical(char **names, int n, int maxlen);
+void   display_horizontal(char **names, int n, int maxlen);
 void   display_long(const char *dir, char **names, int n);
 void   mode_to_string(mode_t mode, char str[11]);
 void   format_time(time_t mtime, char out[13]);
@@ -55,14 +59,15 @@ void   format_time(time_t mtime, char out[13]);
 int main(int argc, char *argv[])
 {
     int opt;
-    /* getopt() reads options one by one. "l" = the options we accept. */
-    while ((opt = getopt(argc, argv, "l")) != -1)
+    /* getopt() reads options one by one. "lx" = the options we accept. */
+    while ((opt = getopt(argc, argv, "lx")) != -1)
     {
         switch (opt)
         {
         case 'l': display_mode = MODE_LONG;       break;
+        case 'x': display_mode = MODE_HORIZONTAL; break;
         default:  /* getopt already printed "invalid option" */
-            fprintf(stderr, "Usage: %s [-l] [directory...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l] [-x] [directory...]\n", argv[0]);
             exit(1);
         }
     }
@@ -105,6 +110,8 @@ void do_ls(const char *dir)
     /* call the right display function based on the mode flag */
     if (display_mode == MODE_LONG)
         display_long(dir, names, n);
+    else if (display_mode == MODE_HORIZONTAL)
+        display_horizontal(names, n, maxlen);
     else
         display_vertical(names, n, maxlen);
 
@@ -232,6 +239,32 @@ void display_vertical(char **names, int n, int maxlen)
         }
         printf("\n");
     }
+}
+
+/*
+ * display_horizontal: -x output, "across". Print items in order,
+ * left to right, and start a new line when the next one does not fit.
+ */
+void display_horizontal(char **names, int n, int maxlen)
+{
+    if (n == 0)
+        return;
+
+    int width     = get_terminal_width();
+    int col_width = maxlen + SPACING;
+    int pos       = 0;                    /* current horizontal position */
+
+    for (int i = 0; i < n; i++)
+    {
+        if (pos > 0 && pos + col_width > width)
+        {
+            printf("\n");                 /* line is full -> wrap */
+            pos = 0;
+        }
+        print_padded(names[i], col_width);
+        pos += col_width;
+    }
+    printf("\n");
 }
 
 /*
