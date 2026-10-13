@@ -1,14 +1,15 @@
 /*
- * Programming Assignment 02: ls-v1.1.0
+ * Programming Assignment 02: ls-v1.2.0
  * Built on top of the instructor's base version lsv1.0.0.c
  *
  * Features so far:
- *   v1.1.0  -l   long listing format  <-- added in this version
+ *   v1.1.0  -l   long listing format
+ *   v1.2.0       default "down then across" column display  <-- added in this version
  *
  * Usage:
  *   $ ./bin/ls
  *   $ ./bin/ls -l
- *   $ ./bin/ls -l /etc /home
+ *   $ ./bin/ls /etc /home
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,12 +24,16 @@
 #include <sys/stat.h>       // stat(), lstat(), S_ISDIR() ...
 #include <sys/types.h>
 #include <sys/sysmacros.h>  // major(), minor() for device files
+#include <sys/ioctl.h>      // ioctl(), TIOCGWINSZ, struct winsize
 
 extern int errno;
 
 /* ---------- display modes (which printing function to call) ---------- */
-#define MODE_DEFAULT    0   /* no option: one name per line          */
+#define MODE_DEFAULT    0   /* no option: "down then across" columns */
 #define MODE_LONG       1   /* -l : long listing                      */
+
+#define SPACING        2    /* spaces between two columns             */
+#define DEFAULT_WIDTH 80    /* used when terminal width is unknown    */
 
 /* ---------- global state set by the options ---------- */
 int display_mode   = MODE_DEFAULT;
@@ -37,10 +42,12 @@ int listed_before  = 0;   /* used to print a blank line between listings */
 
 /* ---------- function prototypes ---------- */
 void   do_ls(const char *dir);
-char **read_entries(const char *dir, int *count);
+char **read_entries(const char *dir, int *count, int *maxlen);
 void   free_entries(char **names, int count);
 void   build_path(char *out, size_t size, const char *dir, const char *name);
-void   display_simple(char **names, int n);
+int    get_terminal_width(void);
+void   print_padded(const char *name, int width);
+void   display_vertical(char **names, int n, int maxlen);
 void   display_long(const char *dir, char **names, int n);
 void   mode_to_string(mode_t mode, char str[11]);
 void   format_time(time_t mtime, char out[13]);
@@ -90,8 +97,8 @@ void do_ls(const char *dir)
     }
     listed_before = 1;
 
-    int n;
-    char **names = read_entries(dir, &n);
+    int n, maxlen;
+    char **names = read_entries(dir, &n, &maxlen);
     if (names == NULL)
         return;
 
@@ -99,17 +106,16 @@ void do_ls(const char *dir)
     if (display_mode == MODE_LONG)
         display_long(dir, names, n);
     else
-        display_simple(names, n);
+        display_vertical(names, n, maxlen);
 
     free_entries(names, n);
 }
 
 /*
  * read_entries: reads all (non-hidden) names of a directory into a
- * dynamically growing array of strings. We need all the names first
- * because -l must know the widest value of each column before printing.
+ * dynamically growing array of strings. Also finds the longest name.
  */
-char **read_entries(const char *dir, int *count)
+char **read_entries(const char *dir, int *count, int *maxlen)
 {
     DIR *dp = opendir(dir);
     if (dp == NULL)
@@ -119,7 +125,7 @@ char **read_entries(const char *dir, int *count)
     }
 
     int capacity = 16;           /* start with room for 16 names */
-    int n = 0;
+    int n = 0, longest = 0;
     char **names = malloc(capacity * sizeof(char *));
     if (names == NULL)
     {
@@ -146,6 +152,9 @@ char **read_entries(const char *dir, int *count)
             names = tmp;
         }
         names[n] = strdup(entry->d_name);   /* copy the name (malloc + strcpy) */
+        int len = strlen(entry->d_name);
+        if (len > longest)
+            longest = len;
         n++;
     }
 
@@ -154,6 +163,7 @@ char **read_entries(const char *dir, int *count)
 
     closedir(dp);
     *count = n;
+    *maxlen = longest;
     return names;
 }
 
@@ -174,11 +184,54 @@ void build_path(char *out, size_t size, const char *dir, const char *name)
         snprintf(out, size, "%s/%s", dir, name);
 }
 
-/* display_simple: the original behaviour of v1.0.0 - one name per line */
-void display_simple(char **names, int n)
+/* get_terminal_width: ask the terminal driver how many columns it has */
+int get_terminal_width(void)
 {
-    for (int i = 0; i < n; i++)
-        printf("%s\n", names[i]);
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0)
+        return DEFAULT_WIDTH;     /* not a terminal (e.g. output piped) */
+    return ws.ws_col;
+}
+
+/* print_padded: print the name, then spaces until "width" characters */
+void print_padded(const char *name, int width)
+{
+    printf("%s", name);
+    for (int i = strlen(name); i < width; i++)
+        putchar(' ');
+}
+
+/*
+ * display_vertical: default ls output, "down then across".
+ * Item i is placed in row (i % rows) and column (i / rows), so while
+ * printing row r we print items r, r+rows, r+2*rows, ...
+ */
+void display_vertical(char **names, int n, int maxlen)
+{
+    if (n == 0)
+        return;
+
+    int width     = get_terminal_width();
+    int col_width = maxlen + SPACING;
+    int cols      = width / col_width;
+    if (cols < 1)
+        cols = 1;
+    int rows = (n + cols - 1) / cols;     /* ceiling of n / cols */
+
+    for (int r = 0; r < rows; r++)
+    {
+        for (int c = 0; c < cols; c++)
+        {
+            int i = r + c * rows;         /* index of the item at (r, c) */
+            if (i >= n)
+                break;
+            if (i + rows < n)             /* another item comes after it on this row */
+                print_padded(names[i], col_width);
+            else                          /* last item of the row: no padding */
+                printf("%s", names[i]);
+        }
+        printf("\n");
+    }
 }
 
 /*
