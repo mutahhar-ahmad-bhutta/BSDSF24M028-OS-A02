@@ -1,12 +1,13 @@
 /*
- * Programming Assignment 02: ls-v1.4.0
+ * Programming Assignment 02: ls-v1.5.0
  * Built on top of the instructor's base version lsv1.0.0.c
  *
  * Features so far:
  *   v1.1.0  -l   long listing format
  *   v1.2.0       default "down then across" column display
  *   v1.3.0  -x   horizontal (across) column display
- *   v1.4.0       alphabetical sorting with qsort()  <-- added in this version
+ *   v1.4.0       alphabetical sorting with qsort()
+ *   v1.5.0       colorized output based on file type  <-- added in this version
  *
  * Usage:
  *   $ ./bin/ls
@@ -39,6 +40,14 @@ extern int errno;
 #define SPACING        2    /* spaces between two columns             */
 #define DEFAULT_WIDTH 80    /* used when terminal width is unknown    */
 
+/* ---------- ANSI escape codes for colors ---------- */
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[0;34m"   /* directories          */
+#define COLOR_GREEN   "\033[0;32m"   /* executables          */
+#define COLOR_RED     "\033[0;31m"   /* .tar .gz .zip        */
+#define COLOR_PINK    "\033[0;35m"   /* symbolic links       */
+#define COLOR_REVERSE "\033[7m"      /* device files, sockets, pipes */
+
 /* ---------- global state set by the options ---------- */
 int display_mode   = MODE_DEFAULT;
 int print_headers  = 0;   /* print "dirname:" above each listing? */
@@ -51,9 +60,12 @@ void   free_entries(char **names, int count);
 int    compare_names(const void *a, const void *b);
 void   build_path(char *out, size_t size, const char *dir, const char *name);
 int    get_terminal_width(void);
-void   print_padded(const char *name, int width);
-void   display_vertical(char **names, int n, int maxlen);
-void   display_horizontal(char **names, int n, int maxlen);
+mode_t get_mode(const char *dir, const char *name);
+const char *get_color(const char *name, mode_t mode);
+void   print_colored(const char *name, mode_t mode);
+void   print_padded(const char *dir, const char *name, int width);
+void   display_vertical(const char *dir, char **names, int n, int maxlen);
+void   display_horizontal(const char *dir, char **names, int n, int maxlen);
 void   display_long(const char *dir, char **names, int n);
 void   mode_to_string(mode_t mode, char str[11]);
 void   format_time(time_t mtime, char out[13]);
@@ -116,9 +128,9 @@ void do_ls(const char *dir)
     if (display_mode == MODE_LONG)
         display_long(dir, names, n);
     else if (display_mode == MODE_HORIZONTAL)
-        display_horizontal(names, n, maxlen);
+        display_horizontal(dir, names, n, maxlen);
     else
-        display_vertical(names, n, maxlen);
+        display_vertical(dir, names, n, maxlen);
 
     free_entries(names, n);
 }
@@ -216,10 +228,57 @@ int get_terminal_width(void)
     return ws.ws_col;
 }
 
-/* print_padded: print the name, then spaces until "width" characters */
-void print_padded(const char *name, int width)
+/* get_mode: lstat() a file inside dir and return its st_mode (0 on error) */
+mode_t get_mode(const char *dir, const char *name)
 {
-    printf("%s", name);
+    char path[PATH_MAX];
+    struct stat info;
+    build_path(path, sizeof(path), dir, name);
+    if (lstat(path, &info) == -1)
+        return 0;
+    return info.st_mode;
+}
+
+/* has_suffix: does name end with suffix? e.g. ("a.tar", ".tar") -> 1 */
+int has_suffix(const char *name, const char *suffix)
+{
+    size_t n = strlen(name), s = strlen(suffix);
+    return n >= s && strcmp(name + n - s, suffix) == 0;
+}
+
+/* get_color: choose the color for a file from its type / name */
+const char *get_color(const char *name, mode_t mode)
+{
+    if (S_ISLNK(mode))
+        return COLOR_PINK;
+    if (S_ISDIR(mode))
+        return COLOR_BLUE;
+    if (S_ISCHR(mode) || S_ISBLK(mode) || S_ISSOCK(mode) || S_ISFIFO(mode))
+        return COLOR_REVERSE;
+    if (has_suffix(name, ".tar") || has_suffix(name, ".gz") || has_suffix(name, ".zip"))
+        return COLOR_RED;
+    if (S_ISREG(mode) && (mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
+        return COLOR_GREEN;
+    return NULL;                  /* normal file: no color */
+}
+
+void print_colored(const char *name, mode_t mode)
+{
+    const char *color = get_color(name, mode);
+    if (color != NULL)
+        printf("%s%s%s", color, name, COLOR_RESET);
+    else
+        printf("%s", name);
+}
+
+/*
+ * print_padded: print the (colored) name, then spaces until "width".
+ * We pad by hand because printf("%-*s") would count the invisible
+ * escape-code characters too, and the columns would not line up.
+ */
+void print_padded(const char *dir, const char *name, int width)
+{
+    print_colored(name, get_mode(dir, name));
     for (int i = strlen(name); i < width; i++)
         putchar(' ');
 }
@@ -229,7 +288,7 @@ void print_padded(const char *name, int width)
  * Item i is placed in row (i % rows) and column (i / rows), so while
  * printing row r we print items r, r+rows, r+2*rows, ...
  */
-void display_vertical(char **names, int n, int maxlen)
+void display_vertical(const char *dir, char **names, int n, int maxlen)
 {
     if (n == 0)
         return;
@@ -249,9 +308,9 @@ void display_vertical(char **names, int n, int maxlen)
             if (i >= n)
                 break;
             if (i + rows < n)             /* another item comes after it on this row */
-                print_padded(names[i], col_width);
+                print_padded(dir, names[i], col_width);
             else                          /* last item of the row: no padding */
-                printf("%s", names[i]);
+                print_colored(names[i], get_mode(dir, names[i]));
         }
         printf("\n");
     }
@@ -261,7 +320,7 @@ void display_vertical(char **names, int n, int maxlen)
  * display_horizontal: -x output, "across". Print items in order,
  * left to right, and start a new line when the next one does not fit.
  */
-void display_horizontal(char **names, int n, int maxlen)
+void display_horizontal(const char *dir, char **names, int n, int maxlen)
 {
     if (n == 0)
         return;
@@ -277,7 +336,7 @@ void display_horizontal(char **names, int n, int maxlen)
             printf("\n");                 /* line is full -> wrap */
             pos = 0;
         }
-        print_padded(names[i], col_width);
+        print_padded(dir, names[i], col_width);
         pos += col_width;
     }
     printf("\n");
@@ -447,7 +506,7 @@ void display_long(const char *dir, char **names, int n)
             printf("%*ld ", w_size, (long)info[i].st_size);
 
         printf("%s ", timestr);
-        printf("%s", names[i]);
+        print_colored(names[i], info[i].st_mode);
 
         /* symbolic link: also show where it points, e.g. "link -> target" */
         if (S_ISLNK(info[i].st_mode))
